@@ -140,26 +140,39 @@ export default function ChatPanel() {
           style={{
             flex: 1,
             padding: "12px",
-            border: "1px solid #d1d5db",
+            border: "1px solid #7b7b7b",
             borderRadius: "8px",
             fontSize: "16px",
           }}
         />
-
-        <button
+          <button
           onClick={handleSend}
           style={{
-            padding: "12px 20px",
-            backgroundColor: "#E6E6E6FF",
-            color: "black",
-            border: "none",
-            borderRadius: "8px",
-            fontSize: "16px",
-            cursor: "pointer",
+           width: "56px",
+           height: "56px",
+           padding: 0,
+           backgroundColor: "#E6E6E6FF",
+           color: "black",
+           border: "1px solid #242424",
+           borderRadius: "8px",
+           cursor: "pointer",
+
+           display: "flex",
+           alignItems: "center",
+           justifyContent: "center",
           }}
-        >
-          ⤴
-        </button>
+>
+           <img
+            src="/icons/send_up_arrow.svg"
+            alt="보내기 버튼"
+            style={{
+            width: "20px",
+            height: "20px",
+            objectFit: "contain",
+            display: "block",
+          }}
+  />
+</button>
       </div>
     </section>
   );

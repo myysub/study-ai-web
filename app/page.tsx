@@ -119,35 +119,38 @@ export default function Home() {
     >
       {/* 왼쪽/오른쪽 패널 위치 전환 버튼 */}
       <button
-        onClick={() => setIsReversed((prev) => !prev)}
-        style={{
-          /**
-           * 화면 상단 가운데에 고정
-           */
-          position: "absolute",
-          top: "12px",
-          left: "2.3%",
-          transform: "translateX(-50%)",
+    onClick={() => setIsReversed((prev) => !prev)}
+    style={{
+      position: "absolute",
+      top: "12px",
+      left: "12px",
+      zIndex: 20,
 
-          /**
-           * 다른 UI 위에 보이게 함
-           */
-          zIndex: 20,
+      width: "36px",
+      height: "36px",
+      padding: 0,
 
-          /**
-           * 버튼 디자인
-           */
-          padding: "7px 12px",
-          backgroundColor: "#ebe9e9",
-          color: "black",
-          border: "black",
-          borderRadius: "6px",
-          cursor: "pointer",
-          fontSize: "15px",
-        }}
-      >
-        ⇄
-      </button>
+      backgroundColor: "#e0e0e0",
+      border: "1px solid #242424",
+      borderRadius: "8px",  
+      cursor: "pointer",
+
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+    }}
+    >
+    <img
+      src="/icons/swap_horizontal.svg"
+      alt="창 바꾸기"
+      style={{
+        width: "22px",
+        height: "22px",
+        display: "block",
+        objectFit: "contain",
+      }}
+    />
+    </button>
 
       {/* PDF 패널 영역 */}
       <div
