@@ -112,6 +112,21 @@ export default function PdfPanel() {
   const [pageDrawings, setPageDrawings] = useState<Record<number, string>>({});
 
   /**
+   * iPad / Apple Pencil / 손가락 이벤트 확인용 화면 로그
+   *
+   * console.log는 브라우저 개발자도구에서만 보이기 때문에,
+   * 아이패드에서도 바로 확인할 수 있도록 화면에도 띄움.
+   */
+  const [pointerLog, setPointerLog] = useState(
+    "PDF 위를 펜 / 손가락 / 마우스로 눌러보세요.",
+  );
+
+  /**
+   * pointermove 로그가 너무 많이 찍히지 않도록 시간 제한을 둠.
+   */
+  const lastPointerLogTimeRef = useRef(0);
+
+  /**
    * PDF 표시 영역 ref
    * PDF 영역의 실제 너비를 계산할 때 사용함.
    */
@@ -137,6 +152,21 @@ export default function PdfPanel() {
    */
   const lastPointRef = useRef<Point | null>(null);
   const activePointerIdRef = useRef<number | null>(null);
+
+  /**
+   * 손가락으로 PDF를 직접 드래그/스크롤하기 위한 상태
+   *
+   * canvas의 touchAction을 none으로 두면 브라우저 기본 스크롤은 막힘.
+   * 대신 touch 입력일 때 직접 pdfBoxRef의 scroll 위치를 바꿔서
+   * 손가락 드래그가 PDF 스크롤처럼 동작하게 함.
+   */
+  const touchScrollRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    scrollLeft: number;
+    scrollTop: number;
+  } | null>(null);
 
   /**
    * 작은 버튼 공통 UI 스타일
@@ -450,113 +480,118 @@ export default function PdfPanel() {
   };
 
   /**
-   * 입력 필터
+   * PDF 스크롤 잠금/해제
    *
-   * pen:
-   * 애플펜슬, 스타일러스 입력이므로 필기 처리함.
-   *
-   * mouse:
-   * PC 테스트용 마우스 입력이므로 필기 처리함.
-   *
-   * touch:
-   * 손가락, 손바닥 입력이므로 필기 처리하지 않음.
-   * preventDefault도 하지 않아서 PDF 영역 스크롤/드래그가 가능하게 둠.
+   * 펜으로 필기하는 순간에는 PDF 스크롤 컨테이너와 wrapper의
+   * 기본 제스처를 확실히 잠가야 iPad에서 필기가 스크롤로 바뀌지 않음.
    */
-  const isDrawingPointer = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    return event.pointerType === "pen" || event.pointerType === "mouse";
+  const setPdfGestureLock = (locked: boolean) => {
+    const pdfBox = pdfBoxRef.current;
+    const pageWrapper = pageWrapperRef.current;
+    const canvas = drawingCanvasRef.current;
+
+    if (pdfBox) {
+      pdfBox.style.touchAction = locked ? "none" : "pan-x pan-y";
+      pdfBox.style.overscrollBehavior = locked ? "contain" : "auto";
+    }
+
+    if (pageWrapper) {
+      pageWrapper.style.touchAction = locked ? "none" : "pan-x pan-y";
+    }
+
+    if (canvas) {
+      canvas.style.touchAction = "none";
+    }
   };
 
   /**
-   * 필기 시작
-   *
-   * 펜 또는 마우스로 PDF 위 canvas를 누르는 순간만 실행됨.
-   * 손가락/손바닥은 여기서 그냥 통과시켜 PDF 스크롤/드래그에 쓰이게 함.
+   * 일부 iPad/Safari 환경에서는 애플펜슬이 pen이 아니라 touch처럼 들어올 수 있음.
+   * 이때 손가락은 width/height가 크게 잡히고, 펜촉은 작게 잡히는 경우가 많아서
+   * 작은 touch 입력은 스타일러스 후보로 보고 필기 처리함.
    */
-  const handlePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    if (!isDrawingPointer(event)) {
-      return;
-    }
+  const isProbablyStylusTouch = (
+    event: ReactPointerEvent<HTMLCanvasElement>,
+  ) => {
+    return (
+      event.pointerType === "touch" &&
+      event.pressure > 0 &&
+      event.width <= 6 &&
+      event.height <= 6
+    );
+  };
 
-    /**
-     * 이미 필기 중이면 다른 입력은 무시함.
-     */
-    if (activePointerIdRef.current !== null) {
-      event.preventDefault();
-      return;
-    }
+  /**
+   * 입력 필터
+   *
+   * pen: 애플펜슬, 스타일러스 입력이므로 필기 처리함.
+   * mouse: PC 테스트용 마우스 입력이므로 필기 처리함.
+   * 작은 touch: 일부 브라우저에서 펜이 touch로 잡히는 경우를 보정함.
+   * 일반 touch: 손가락, 손바닥 입력이므로 필기하지 않고 PDF 드래그로 처리함.
+   */
+  const isDrawingPointer = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    return (
+      event.pointerType === "pen" ||
+      event.pointerType === "mouse" ||
+      isProbablyStylusTouch(event)
+    );
+  };
 
-    event.preventDefault();
-
-    const point = getCanvasPoint(event);
-    if (!point) return;
-
+  /**
+   * 손가락으로 PDF를 드래그하기 시작함.
+   *
+   * canvas의 touchAction을 none으로 설정해 펜 스크롤 오작동을 막았기 때문에,
+   * 손가락 스크롤은 브라우저 기본 동작에 맡기지 않고 직접 구현함.
+   */
+  const startTouchScroll = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    const pdfBox = pdfBoxRef.current;
     const canvas = drawingCanvasRef.current;
-    if (!canvas) return;
 
-    /**
-     * pointer capture로 현재 펜/마우스 입력만 끝까지 추적함.
-     * 중간에 손바닥 터치가 들어와도 pointerId가 다르면 무시됨.
-     */
+    if (!pdfBox || !canvas) return;
+
+    touchScrollRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      scrollLeft: pdfBox.scrollLeft,
+      scrollTop: pdfBox.scrollTop,
+    };
+
     try {
       canvas.setPointerCapture(event.pointerId);
     } catch {
-      // 일부 브라우저에서 capture가 실패해도 필기는 계속 가능하게 둠.
+      // 일부 브라우저에서 capture가 실패해도 스크롤은 계속 시도함.
     }
-
-    activePointerIdRef.current = event.pointerId;
-    isDrawingRef.current = true;
-    lastPointRef.current = point;
-
-    drawDot(point);
   };
 
   /**
-   * 필기 중
-   *
-   * 필기를 시작한 펜/마우스 pointerId와 같은 입력만 선으로 이어 그림.
-   * 손가락/손바닥 움직임은 막지 않아서 PDF 드래그/스크롤에 쓰이게 함.
+   * 손가락 이동량만큼 PDF 영역을 직접 스크롤함.
    */
-  const handlePointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    if (!isDrawingPointer(event)) {
-      return;
-    }
+  const moveTouchScroll = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    const touchScroll = touchScrollRef.current;
+    const pdfBox = pdfBoxRef.current;
 
-    /**
-     * 필기를 시작한 입력의 pointerId와 다르면 무시함.
-     */
-    if (activePointerIdRef.current !== event.pointerId) return;
-
-    if (!isDrawingRef.current) return;
+    if (!touchScroll || !pdfBox) return;
+    if (touchScroll.pointerId !== event.pointerId) return;
 
     event.preventDefault();
 
-    const currentPoint = getCanvasPoint(event);
-    const lastPoint = lastPointRef.current;
+    const dx = event.clientX - touchScroll.startX;
+    const dy = event.clientY - touchScroll.startY;
 
-    if (!currentPoint || !lastPoint) return;
-
-    drawLine(lastPoint, currentPoint);
-    lastPointRef.current = currentPoint;
+    pdfBox.scrollLeft = touchScroll.scrollLeft - dx;
+    pdfBox.scrollTop = touchScroll.scrollTop - dy;
   };
 
   /**
-   * 필기 종료
+   * 손가락 PDF 드래그를 끝냄.
    */
-  const handlePointerUp = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    if (!isDrawingPointer(event)) {
-      return;
-    }
-
-    /**
-     * 손바닥 / 손가락의 pointerup, pointercancel은 현재 필기를 끝내면 안 됨.
-     */
-    if (activePointerIdRef.current !== event.pointerId) {
-      return;
-    }
-
-    event.preventDefault();
-
+  const endTouchScroll = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    const touchScroll = touchScrollRef.current;
     const canvas = drawingCanvasRef.current;
+
+    if (!touchScroll || touchScroll.pointerId !== event.pointerId) return;
+
+    event.preventDefault();
 
     if (canvas) {
       try {
@@ -568,11 +603,223 @@ export default function PdfPanel() {
       }
     }
 
-    isDrawingRef.current = false;
-    lastPointRef.current = null;
-    activePointerIdRef.current = null;
+    touchScrollRef.current = null;
+  };
 
-    saveCurrentDrawing();
+  /**
+   * pointer 이벤트 값을 화면과 콘솔에 같이 출력함.
+   *
+   * 확인할 것:
+   * 1. 애플펜슬이 pointerType: "pen"으로 들어오는지
+   * 2. 손가락이 pointerType: "touch"로 들어오는지
+   * 3. 필기 중 스크롤될 때 pointerType / pressure / width / height가 바뀌는지
+   */
+  const writePointerLog = (
+    event: ReactPointerEvent<HTMLCanvasElement>,
+    phase: "pointerdown" | "pointermove" | "pointerup" | "pointercancel",
+    force = false,
+  ) => {
+    const now = Date.now();
+
+    /**
+     * pointermove는 너무 자주 발생하므로 150ms마다 한 번만 표시함.
+     */
+    if (!force && phase === "pointermove" && now - lastPointerLogTimeRef.current < 150) {
+      return;
+    }
+
+    lastPointerLogTimeRef.current = now;
+
+    const log = {
+      phase,
+      pointerType: event.pointerType,
+      pointerId: event.pointerId,
+      width: event.width,
+      height: event.height,
+      pressure: event.pressure,
+      buttons: event.buttons,
+      button: event.button,
+      isPrimary: event.isPrimary,
+      activePointerId: activePointerIdRef.current,
+      isDrawing: isDrawingRef.current,
+    };
+
+    console.log("PDF pointer log", log);
+    setPointerLog(JSON.stringify(log, null, 2));
+  };
+
+  /**
+   * 필기 시작
+   *
+   * 펜 또는 마우스는 필기를 시작함.
+   * 손가락은 필기하지 않고 PDF 드래그/스크롤로 처리함.
+   *
+   * 중요:
+   * touch 분기보다 isDrawingPointer를 먼저 검사해야 함.
+   * 그래야 애플펜슬이 touch로 들어오는 iPad 환경에서도 스크롤이 아니라 필기가 됨.
+   */
+  const handlePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    writePointerLog(event, "pointerdown", true);
+
+    const canDraw = isDrawingPointer(event);
+
+    if (canDraw) {
+      /**
+       * 마우스는 왼쪽 버튼만 필기 처리함.
+       */
+      if (event.pointerType === "mouse" && event.button !== 0) {
+        return;
+      }
+
+      /**
+       * 이미 필기 중이면 다른 입력은 무시함.
+       */
+      if (activePointerIdRef.current !== null) {
+        event.preventDefault();
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      /**
+       * 펜 필기가 시작되면 스크롤 제스처를 강제로 잠금.
+       */
+      setPdfGestureLock(true);
+      touchScrollRef.current = null;
+
+      const point = getCanvasPoint(event);
+      if (!point) return;
+
+      const canvas = drawingCanvasRef.current;
+      if (!canvas) return;
+
+      /**
+       * pointer capture로 현재 펜/마우스 입력만 끝까지 추적함.
+       * 중간에 손바닥 터치가 들어와도 pointerId가 다르면 무시됨.
+       */
+      try {
+        canvas.setPointerCapture(event.pointerId);
+      } catch {
+        // 일부 브라우저에서 capture가 실패해도 필기는 계속 가능하게 둠.
+      }
+
+      activePointerIdRef.current = event.pointerId;
+      isDrawingRef.current = true;
+      lastPointRef.current = point;
+
+      drawDot(point);
+      return;
+    }
+
+    /**
+     * 일반 손가락/손바닥 입력
+     *
+     * 펜으로 필기 중이면 손바닥 터치는 완전히 무시함.
+     * 필기 중이 아니면 손가락 드래그로 PDF 스크롤을 직접 처리함.
+     */
+    if (event.pointerType === "touch") {
+      if (activePointerIdRef.current !== null || isDrawingRef.current) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
+      event.preventDefault();
+      startTouchScroll(event);
+      return;
+    }
+  };
+
+  /**
+   * 필기 중
+   *
+   * 필기를 시작한 펜/마우스 pointerId와 같은 입력만 선으로 이어 그림.
+   * 손가락은 필기 중이 아닐 때만 PDF 스크롤로 처리함.
+   */
+  const handlePointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    writePointerLog(event, "pointermove");
+
+    /**
+     * 현재 필기를 시작한 입력이면 pointerType이 touch처럼 들어와도
+     * 스크롤이 아니라 필기로 계속 처리함.
+     */
+    if (activePointerIdRef.current === event.pointerId && isDrawingRef.current) {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const currentPoint = getCanvasPoint(event);
+      const lastPoint = lastPointRef.current;
+
+      if (!currentPoint || !lastPoint) return;
+
+      drawLine(lastPoint, currentPoint);
+      lastPointRef.current = currentPoint;
+      return;
+    }
+
+    if (event.pointerType === "touch") {
+      /**
+       * 펜으로 필기 중인 상태에서 들어오는 손바닥 move는 스크롤시키지 않음.
+       */
+      if (activePointerIdRef.current !== null || isDrawingRef.current) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
+      moveTouchScroll(event);
+      return;
+    }
+  };
+
+  /**
+   * 필기 종료 또는 손가락 드래그 종료
+   */
+  const handlePointerUp = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    writePointerLog(
+      event,
+      event.type === "pointercancel" ? "pointercancel" : "pointerup",
+      true,
+    );
+
+    if (activePointerIdRef.current === event.pointerId && isDrawingRef.current) {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const canvas = drawingCanvasRef.current;
+
+      if (canvas) {
+        try {
+          if (canvas.hasPointerCapture(event.pointerId)) {
+            canvas.releasePointerCapture(event.pointerId);
+          }
+        } catch {
+          // release 실패는 무시해도 됨.
+        }
+      }
+
+      isDrawingRef.current = false;
+      lastPointRef.current = null;
+      activePointerIdRef.current = null;
+      setPdfGestureLock(false);
+
+      saveCurrentDrawing();
+      return;
+    }
+
+    if (event.pointerType === "touch") {
+      /**
+       * 손바닥 / 손가락의 pointerup, pointercancel은 현재 필기를 끝내면 안 됨.
+       */
+      if (activePointerIdRef.current !== null || isDrawingRef.current) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
+      endTouchScroll(event);
+    }
   };
 
   /**
@@ -664,6 +911,88 @@ export default function PdfPanel() {
       window.clearTimeout(timer);
     };
   }, [pageNumber, pdfPageWidth, pageDrawings]);
+
+  /**
+   * iPad/Safari 보정
+   *
+   * React 이벤트만으로는 일부 브라우저에서 펜 이동 중 스크롤 제스처가
+   * 먼저 잡히는 경우가 있어서 native listener를 passive:false로 추가함.
+   * 필기 중일 때만 기본 touch/gesture 동작을 막고, 평소 손가락 드래그는
+   * 위의 pointer 핸들러에서 직접 스크롤 처리함.
+   */
+  useEffect(() => {
+    const canvas = drawingCanvasRef.current;
+    if (!canvas) return;
+
+    const preventWhileDrawing = (event: TouchEvent) => {
+      if (activePointerIdRef.current !== null || isDrawingRef.current) {
+        event.preventDefault();
+      }
+    };
+
+    const preventGestureWhileDrawing = (event: Event) => {
+      if (activePointerIdRef.current !== null || isDrawingRef.current) {
+        event.preventDefault();
+      }
+    };
+
+    const isNativeProbablyStylusTouch = (event: PointerEvent) => {
+      return (
+        event.pointerType === "touch" &&
+        event.pressure > 0 &&
+        event.width <= 6 &&
+        event.height <= 6
+      );
+    };
+
+    const isNativeDrawingPointer = (event: PointerEvent) => {
+      return (
+        event.pointerType === "pen" ||
+        event.pointerType === "mouse" ||
+        isNativeProbablyStylusTouch(event)
+      );
+    };
+
+    const preventPointerOnCanvas = (event: PointerEvent) => {
+      if (isNativeDrawingPointer(event)) {
+        event.preventDefault();
+      }
+    };
+
+    const preventActivePointerOnDocument = (event: PointerEvent) => {
+      if (activePointerIdRef.current !== null || isDrawingRef.current) {
+        event.preventDefault();
+      }
+    };
+
+    const options: AddEventListenerOptions = { passive: false };
+
+    canvas.addEventListener("touchstart", preventWhileDrawing, options);
+    canvas.addEventListener("touchmove", preventWhileDrawing, options);
+    canvas.addEventListener("pointerdown", preventPointerOnCanvas, options);
+    canvas.addEventListener("pointermove", preventPointerOnCanvas, options);
+
+    document.addEventListener("touchmove", preventWhileDrawing, options);
+    document.addEventListener("pointermove", preventActivePointerOnDocument, options);
+
+    /**
+     * Safari 전용 gesture 이벤트 방어.
+     */
+    document.addEventListener("gesturestart", preventGestureWhileDrawing, options);
+    document.addEventListener("gesturechange", preventGestureWhileDrawing, options);
+
+    return () => {
+      canvas.removeEventListener("touchstart", preventWhileDrawing);
+      canvas.removeEventListener("touchmove", preventWhileDrawing);
+      canvas.removeEventListener("pointerdown", preventPointerOnCanvas);
+      canvas.removeEventListener("pointermove", preventPointerOnCanvas);
+
+      document.removeEventListener("touchmove", preventWhileDrawing);
+      document.removeEventListener("pointermove", preventActivePointerOnDocument);
+      document.removeEventListener("gesturestart", preventGestureWhileDrawing);
+      document.removeEventListener("gesturechange", preventGestureWhileDrawing);
+    };
+  }, [pdfUrl, pageNumber]);
 
   return (
     <section
@@ -965,8 +1294,45 @@ export default function PdfPanel() {
           padding: pdfUrl ? "10px" : "0",
 
           boxSizing: "border-box",
+
+          /**
+           * pointer 로그 화면을 PDF 박스 위에 absolute로 띄우기 위해 필요함.
+           */
+          position: "relative",
+
+          /**
+           * 기본적으로 손가락 스크롤은 허용하되, 펜 필기 중에는 JS에서 none으로 잠금.
+           */
+          touchAction: "pan-x pan-y",
+          WebkitOverflowScrolling: "touch",
+          overscrollBehavior: "contain",
         }}
       >
+        {/* 아이패드에서도 바로 볼 수 있는 pointer 이벤트 디버그 로그 */}
+        <pre
+          style={{
+            position: "absolute",
+            top: "10px",
+            left: "10px",
+            zIndex: 9999,
+            maxWidth: "280px",
+            maxHeight: "180px",
+            overflow: "auto",
+            margin: 0,
+            padding: "8px",
+            borderRadius: "8px",
+            backgroundColor: "rgba(0, 0, 0, 0.78)",
+            color: "white",
+            fontSize: "11px",
+            lineHeight: 1.4,
+            whiteSpace: "pre-wrap",
+            pointerEvents: "none",
+            userSelect: "none",
+          }}
+        >
+          {pointerLog}
+        </pre>
+
         {pdfUrl ? (
           <div
             style={{
@@ -1081,6 +1447,11 @@ export default function PdfPanel() {
                  * PDF 페이지 크기만큼만 영역 차지
                  */
                 display: "inline-block",
+
+                /**
+                 * canvas가 target일 때 브라우저 기본 스크롤 개입을 줄임.
+                 */
+                touchAction: "none",
               }}
             >
               {/* PDF 문서 렌더링 */}
@@ -1118,7 +1489,6 @@ export default function PdfPanel() {
                 onPointerMove={handlePointerMove}
                 onPointerUp={handlePointerUp}
                 onPointerCancel={handlePointerUp}
-                onLostPointerCapture={handlePointerUp}
                 onContextMenu={(event) => event.preventDefault()}
                 style={{
                   position: "absolute",
@@ -1127,12 +1497,15 @@ export default function PdfPanel() {
                   zIndex: 4,
                   pointerEvents: "auto",
                   /**
-                   * 손가락은 PDF 영역 스크롤/드래그에 사용하고,
-                   * 펜/마우스 입력만 JS에서 preventDefault하여 필기로 처리함.
+                   * 중요:
+                   * pan-x / pan-y를 허용하면 아이패드에서 펜 입력 중에도
+                   * 브라우저가 스크롤 제스처로 가져가 필기가 끊길 수 있음.
+                   * 그래서 기본 제스처는 막고, 손가락 드래그는 JS로 직접 스크롤함.
                    */
-                  touchAction: "pan-x pan-y",
+                  touchAction: "none",
                   userSelect: "none",
                   WebkitUserSelect: "none",
+                  WebkitTouchCallout: "none",
                   overscrollBehavior: "contain",
                   cursor: drawTool === "eraser" ? "grab" : "crosshair",
                 }}
