@@ -141,6 +141,7 @@ export default function PdfPanel() {
    * 이전 필기 좌표 저장
    */
   const lastPointRef = useRef<Point | null>(null);
+  const activePointerIdRef = useRef<number | null>(null);
 
   /**
    * 작은 버튼 공통 UI 스타일
@@ -474,20 +475,38 @@ useEffect(() => {
 const isAllowedPointer = (
   event: ReactPointerEvent<HTMLCanvasElement>
 ) => {
+  /**
+   * 핵심 팜 리젝션
+   *
+   * pointerType === "pen"  : 애플펜슬 / 스타일러스만 필기 허용
+   * pointerType === "mouse": PC 테스트용으로만 허용
+   * pointerType === "touch": 손가락 / 손바닥이므로 무조건 차단
+   */
   if (event.pointerType === "pen") return true;
   if (event.pointerType === "mouse") return true;
 
   return false;
 };
 
-  const handlePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+const handlePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
   if (!isPenMode) return;
 
   /**
-   * 팜 리젝션
-   * 펜이나 마우스가 아니면 그리지 않음.
+   * 이미 펜으로 필기 중이면 다른 입력은 전부 무시함.
+   * 손바닥이 나중에 닿아도 새 필기로 처리되지 않게 함.
    */
-  if (!isAllowedPointer(event)) return;
+  if (activePointerIdRef.current !== null) {
+    event.preventDefault();
+    return;
+  }
+
+  /**
+   * 손가락 / 손바닥 터치는 시작부터 막음.
+   */
+  if (!isAllowedPointer(event)) {
+    event.preventDefault();
+    return;
+  }
 
   event.preventDefault();
 
@@ -497,8 +516,17 @@ const isAllowedPointer = (
   const canvas = drawingCanvasRef.current;
   if (!canvas) return;
 
-  canvas.setPointerCapture(event.pointerId);
+  /**
+   * pointer capture로 현재 펜 입력만 끝까지 추적함.
+   * 중간에 손바닥 터치가 들어와도 pointerId가 다르면 무시됨.
+   */
+  try {
+    canvas.setPointerCapture(event.pointerId);
+  } catch {
+    // 일부 브라우저에서 capture가 실패해도 필기는 계속 가능하게 둠.
+  }
 
+  activePointerIdRef.current = event.pointerId;
   isDrawingRef.current = true;
   lastPointRef.current = point;
 
@@ -510,13 +538,22 @@ const isAllowedPointer = (
    *
    * 포인터가 움직일 때마다 실행됨.
    */
-  const handlePointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+  
+const handlePointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
   if (!isPenMode) return;
 
   /**
-   * 손가락이나 손바닥 입력이면 무시
+   * 손가락 / 손바닥 움직임은 그리지도 않고, 화면 제스처로도 번지지 않게 막음.
    */
-  if (!isAllowedPointer(event)) return;
+  if (!isAllowedPointer(event)) {
+    event.preventDefault();
+    return;
+  }
+
+  /**
+   * 필기를 시작한 펜의 pointerId와 다르면 무시함.
+   */
+  if (activePointerIdRef.current !== event.pointerId) return;
 
   if (!isDrawingRef.current) return;
 
@@ -531,27 +568,37 @@ const isAllowedPointer = (
   lastPointRef.current = currentPoint;
 };
 
-  /**
-   * 필기 종료
-   *
-   * 포인터를 떼면 현재 페이지 필기를 저장함.
-   */
-  const handlePointerUp = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+const handlePointerUp = (event: ReactPointerEvent<HTMLCanvasElement>) => {
   if (!isPenMode) return;
 
   /**
-   * 손가락이나 손바닥 입력이면 무시
+   * 손바닥 / 손가락의 pointerup, pointercancel은 현재 필기를 끝내면 안 됨.
    */
-  if (!isAllowedPointer(event)) return;
+  if (activePointerIdRef.current !== event.pointerId) {
+    event.preventDefault();
+    return;
+  }
 
   event.preventDefault();
 
+  const canvas = drawingCanvasRef.current;
+
+  if (canvas) {
+    try {
+      if (canvas.hasPointerCapture(event.pointerId)) {
+        canvas.releasePointerCapture(event.pointerId);
+      }
+    } catch {
+      // release 실패는 무시해도 됨.
+    }
+  }
+
   isDrawingRef.current = false;
   lastPointRef.current = null;
+  activePointerIdRef.current = null;
 
   saveCurrentDrawing();
 };
-
   /**
    * 현재 페이지의 필기만 지우기
    */
@@ -1105,6 +1152,8 @@ const isAllowedPointer = (
                  onPointerMove={handlePointerMove}
                  onPointerUp={handlePointerUp}
                  onPointerCancel={handlePointerUp}
+                 onLostPointerCapture={handlePointerUp}
+                 onContextMenu={(event) => event.preventDefault()}
                  style={{
                  position: "absolute",
                  left: 0,
@@ -1112,6 +1161,9 @@ const isAllowedPointer = (
                  zIndex: 4,
                  pointerEvents: isPenMode ? "auto" : "none",
                  touchAction: isPenMode ? "none" : "auto",
+                 userSelect: "none",
+                 WebkitUserSelect: "none",
+                 overscrollBehavior: "contain",
                  cursor:
                  drawTool === "eraser"
                   ? "grab"
