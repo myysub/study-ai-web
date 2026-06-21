@@ -112,6 +112,21 @@ export default function PdfPanel() {
   const [pageDrawings, setPageDrawings] = useState<Record<number, string>>({});
 
   /**
+   * pageDrawings의 최신 값을 즉시 참조하기 위한 ref.
+   *
+   * PDF를 손가락으로 확대/축소하면 react-pdf가 다시 렌더링되고,
+   * 그 과정에서 필기 canvas가 다시 그려짐.
+   * 이때 저장된 필기를 바로 복원하기 위해 state와 ref를 같이 사용함.
+   */
+  const pageDrawingsRef = useRef<Record<number, string>>({});
+
+  /**
+   * 손가락 확대/축소 범위
+   */
+  const MIN_PDF_WIDTH = 250;
+  const MAX_PDF_WIDTH = 1800;
+
+  /**
    * iPad / Apple Pencil / 손가락 이벤트 확인용 화면 로그
    *
    * console.log는 브라우저 개발자도구에서만 보이기 때문에,
@@ -167,6 +182,29 @@ export default function PdfPanel() {
     scrollLeft: number;
     scrollTop: number;
   } | null>(null);
+
+  /**
+   * 손가락 포인터들을 저장함.
+   * 손가락 1개는 PDF 드래그/스크롤, 손가락 2개는 PDF 확대/축소로 처리함.
+   */
+  const touchPointersRef = useRef<Map<number, Point>>(new Map());
+
+  /**
+   * 두 손가락 확대/축소 상태 저장
+   */
+  const pinchZoomRef = useRef<{
+    startDistance: number;
+    startWidth: number;
+    centerContentX: number;
+    centerContentY: number;
+    centerBoxX: number;
+    centerBoxY: number;
+  } | null>(null);
+
+  /**
+   * requestAnimationFrame 중복 실행 방지용 ref
+   */
+  const zoomScrollFrameRef = useRef<number | null>(null);
 
   /**
    * 작은 버튼 공통 UI 스타일
@@ -235,6 +273,13 @@ export default function PdfPanel() {
   }, []);
 
   /**
+   * 숫자를 최소/최대 범위 안으로 제한함.
+   */
+  const clamp = (value: number, min: number, max: number) => {
+    return Math.min(max, Math.max(min, value));
+  };
+
+  /**
    * PDF 파일 업로드 처리
    */
   const handlePdfUpload = (event: ChangeEvent<HTMLInputElement>) => {
@@ -247,6 +292,7 @@ export default function PdfPanel() {
     setPdfUrl(url);
     setPageNumber(1);
     setNumPages(0);
+    pageDrawingsRef.current = {};
     setPageDrawings({});
 
     event.target.value = "";
@@ -267,10 +313,13 @@ export default function PdfPanel() {
 
     const imageData = canvas.toDataURL("image/png");
 
-    setPageDrawings((prev) => ({
-      ...prev,
+    const nextDrawings = {
+      ...pageDrawingsRef.current,
       [pageNumber]: imageData,
-    }));
+    };
+
+    pageDrawingsRef.current = nextDrawings;
+    setPageDrawings(nextDrawings);
   };
 
   /**
@@ -300,7 +349,7 @@ export default function PdfPanel() {
 
     context.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
 
-    const savedDrawing = pageDrawings[pageNumber];
+    const savedDrawing = pageDrawingsRef.current[pageNumber];
 
     if (savedDrawing) {
       const image = new Image();
@@ -542,19 +591,29 @@ export default function PdfPanel() {
    * canvas의 touchAction을 none으로 설정해 펜 스크롤 오작동을 막았기 때문에,
    * 손가락 스크롤은 브라우저 기본 동작에 맡기지 않고 직접 구현함.
    */
-  const startTouchScroll = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+  const startTouchScrollFromPoint = (pointerId: number, point: Point) => {
     const pdfBox = pdfBoxRef.current;
-    const canvas = drawingCanvasRef.current;
 
-    if (!pdfBox || !canvas) return;
+    if (!pdfBox) return;
 
     touchScrollRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
+      pointerId,
+      startX: point.x,
+      startY: point.y,
       scrollLeft: pdfBox.scrollLeft,
       scrollTop: pdfBox.scrollTop,
     };
+  };
+
+  const startTouchScroll = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    const canvas = drawingCanvasRef.current;
+
+    startTouchScrollFromPoint(event.pointerId, {
+      x: event.clientX,
+      y: event.clientY,
+    });
+
+    if (!canvas) return;
 
     try {
       canvas.setPointerCapture(event.pointerId);
@@ -607,6 +666,134 @@ export default function PdfPanel() {
   };
 
   /**
+   * 손가락 포인터 목록에 현재 손가락 위치를 저장함.
+   */
+  const updateTouchPointer = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    touchPointersRef.current.set(event.pointerId, {
+      x: event.clientX,
+      y: event.clientY,
+    });
+  };
+
+  /**
+   * 두 점 사이 거리를 구함.
+   */
+  const getDistance = (a: Point, b: Point) => {
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  };
+
+  /**
+   * 두 손가락 중심점을 구함.
+   */
+  const getCenterPoint = (a: Point, b: Point): Point => {
+    return {
+      x: (a.x + b.x) / 2,
+      y: (a.y + b.y) / 2,
+    };
+  };
+
+  /**
+   * 손가락 2개로 PDF 확대/축소를 시작함.
+   */
+  const startPinchZoom = () => {
+    const pdfBox = pdfBoxRef.current;
+    const points = Array.from(touchPointersRef.current.values());
+
+    if (!pdfBox || points.length < 2) return;
+
+    /**
+     * 확대/축소 직전에 현재 필기를 저장해 둠.
+     * 그래야 PDF 크기가 바뀌며 canvas가 다시 맞춰질 때 필기가 사라지지 않음.
+     */
+    saveCurrentDrawing();
+
+    const [firstPoint, secondPoint] = points;
+    const startDistance = getDistance(firstPoint, secondPoint);
+    const center = getCenterPoint(firstPoint, secondPoint);
+    const boxRect = pdfBox.getBoundingClientRect();
+
+    pinchZoomRef.current = {
+      startDistance,
+      startWidth: pdfPageWidth,
+      centerContentX: pdfBox.scrollLeft + center.x - boxRect.left,
+      centerContentY: pdfBox.scrollTop + center.y - boxRect.top,
+      centerBoxX: center.x - boxRect.left,
+      centerBoxY: center.y - boxRect.top,
+    };
+
+    /**
+     * 두 손가락 확대/축소 중에는 한 손가락 스크롤 상태를 끊음.
+     */
+    touchScrollRef.current = null;
+  };
+
+  /**
+   * 두 손가락 간격 변화에 맞춰 PDF 페이지 너비를 바꿈.
+   */
+  const movePinchZoom = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    const pdfBox = pdfBoxRef.current;
+    const pinchZoom = pinchZoomRef.current;
+    const points = Array.from(touchPointersRef.current.values());
+
+    if (!pdfBox || !pinchZoom || points.length < 2) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const [firstPoint, secondPoint] = points;
+    const currentDistance = getDistance(firstPoint, secondPoint);
+
+    if (pinchZoom.startDistance <= 0) return;
+
+    const scale = currentDistance / pinchZoom.startDistance;
+    const nextWidth = clamp(
+      Math.round(pinchZoom.startWidth * scale),
+      MIN_PDF_WIDTH,
+      MAX_PDF_WIDTH,
+    );
+
+    const appliedScale = nextWidth / pinchZoom.startWidth;
+
+    setPdfPageWidth(nextWidth);
+
+    /**
+     * 확대/축소 중심이 손가락 중간 지점 근처에 남도록 스크롤 위치를 보정함.
+     */
+    if (zoomScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(zoomScrollFrameRef.current);
+    }
+
+    zoomScrollFrameRef.current = window.requestAnimationFrame(() => {
+      pdfBox.scrollLeft =
+        pinchZoom.centerContentX * appliedScale - pinchZoom.centerBoxX;
+      pdfBox.scrollTop =
+        pinchZoom.centerContentY * appliedScale - pinchZoom.centerBoxY;
+      zoomScrollFrameRef.current = null;
+    });
+  };
+
+  /**
+   * 손가락이 줄어들었을 때 확대/축소 상태를 정리함.
+   */
+  const finishOrRestartPinchZoom = () => {
+    if (!pinchZoomRef.current) return;
+
+    if (touchPointersRef.current.size >= 2) {
+      startPinchZoom();
+      return;
+    }
+
+    pinchZoomRef.current = null;
+
+    const remainingTouch = Array.from(touchPointersRef.current.entries())[0];
+
+    if (remainingTouch) {
+      const [pointerId, point] = remainingTouch;
+      startTouchScrollFromPoint(pointerId, point);
+    }
+  };
+
+  /**
    * pointer 이벤트 값을 화면과 콘솔에 같이 출력함.
    *
    * 확인할 것:
@@ -642,6 +829,9 @@ export default function PdfPanel() {
       isPrimary: event.isPrimary,
       activePointerId: activePointerIdRef.current,
       isDrawing: isDrawingRef.current,
+      touchCount: touchPointersRef.current.size,
+      isPinching: pinchZoomRef.current !== null,
+      pdfPageWidth,
     };
 
     console.log("PDF pointer log", log);
@@ -726,6 +916,24 @@ export default function PdfPanel() {
       }
 
       event.preventDefault();
+      event.stopPropagation();
+
+      updateTouchPointer(event);
+
+      const canvas = drawingCanvasRef.current;
+      if (canvas) {
+        try {
+          canvas.setPointerCapture(event.pointerId);
+        } catch {
+          // capture 실패는 무시해도 됨.
+        }
+      }
+
+      if (touchPointersRef.current.size >= 2) {
+        startPinchZoom();
+        return;
+      }
+
       startTouchScroll(event);
       return;
     }
@@ -765,6 +973,20 @@ export default function PdfPanel() {
       if (activePointerIdRef.current !== null || isDrawingRef.current) {
         event.preventDefault();
         event.stopPropagation();
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      updateTouchPointer(event);
+
+      if (pinchZoomRef.current || touchPointersRef.current.size >= 2) {
+        if (!pinchZoomRef.current) {
+          startPinchZoom();
+        }
+
+        movePinchZoom(event);
         return;
       }
 
@@ -818,7 +1040,29 @@ export default function PdfPanel() {
         return;
       }
 
-      endTouchScroll(event);
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (touchScrollRef.current?.pointerId === event.pointerId) {
+        endTouchScroll(event);
+      }
+
+      touchPointersRef.current.delete(event.pointerId);
+
+      const canvas = drawingCanvasRef.current;
+
+      if (canvas) {
+        try {
+          if (canvas.hasPointerCapture(event.pointerId)) {
+            canvas.releasePointerCapture(event.pointerId);
+          }
+        } catch {
+          // release 실패는 무시해도 됨.
+        }
+      }
+
+      finishOrRestartPinchZoom();
+      return;
     }
   };
 
@@ -834,11 +1078,11 @@ export default function PdfPanel() {
 
     context.clearRect(0, 0, canvas.width, canvas.height);
 
-    setPageDrawings((prev) => {
-      const next = { ...prev };
-      delete next[pageNumber];
-      return next;
-    });
+    const nextDrawings = { ...pageDrawingsRef.current };
+    delete nextDrawings[pageNumber];
+
+    pageDrawingsRef.current = nextDrawings;
+    setPageDrawings(nextDrawings);
   };
 
   /**
@@ -852,6 +1096,7 @@ export default function PdfPanel() {
       context?.clearRect(0, 0, canvas.width, canvas.height);
     }
 
+    pageDrawingsRef.current = {};
     setPageDrawings({});
   };
 
@@ -925,13 +1170,21 @@ export default function PdfPanel() {
     if (!canvas) return;
 
     const preventWhileDrawing = (event: TouchEvent) => {
-      if (activePointerIdRef.current !== null || isDrawingRef.current) {
+      if (
+        activePointerIdRef.current !== null ||
+        isDrawingRef.current ||
+        pinchZoomRef.current !== null
+      ) {
         event.preventDefault();
       }
     };
 
     const preventGestureWhileDrawing = (event: Event) => {
-      if (activePointerIdRef.current !== null || isDrawingRef.current) {
+      if (
+        activePointerIdRef.current !== null ||
+        isDrawingRef.current ||
+        pinchZoomRef.current !== null
+      ) {
         event.preventDefault();
       }
     };
@@ -960,7 +1213,11 @@ export default function PdfPanel() {
     };
 
     const preventActivePointerOnDocument = (event: PointerEvent) => {
-      if (activePointerIdRef.current !== null || isDrawingRef.current) {
+      if (
+        activePointerIdRef.current !== null ||
+        isDrawingRef.current ||
+        pinchZoomRef.current !== null
+      ) {
         event.preventDefault();
       }
     };
@@ -1406,6 +1663,17 @@ export default function PdfPanel() {
                 }}
               >
                 {pageNumber} / {numPages || "?"}
+              </span>
+
+              <span
+                style={{
+                  color: "#4b5563",
+                  fontSize: "12px",
+                  minWidth: "72px",
+                  textAlign: "center",
+                }}
+              >
+                확대 {Math.round((pdfPageWidth / 700) * 100)}%
               </span>
 
               {/* 다음 페이지 버튼 */}
