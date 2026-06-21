@@ -126,7 +126,7 @@ export default function Home() {
            */
           position: "absolute",
           top: "12px",
-          left: "3%",
+          left: "2.3%",
           transform: "translateX(-50%)",
 
           /**
@@ -137,13 +137,13 @@ export default function Home() {
           /**
            * 버튼 디자인
            */
-          padding: "5px 7spx",
+          padding: "7px 12px",
           backgroundColor: "#ebe9e9",
           color: "black",
           border: "black",
           borderRadius: "6px",
           cursor: "pointer",
-          fontSize: "10px",
+          fontSize: "15px",
         }}
       >
         ⇄

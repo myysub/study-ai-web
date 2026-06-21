@@ -158,7 +158,7 @@ export default function ChatPanel() {
             cursor: "pointer",
           }}
         >
-          전송
+          ⤴
         </button>
       </div>
     </section>

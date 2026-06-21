@@ -681,7 +681,7 @@ useEffect(() => {
             margin: 0,
           }}
         >
-          PDF 뷰어
+          
         </h1>
 
         {/* PDF 파일 선택 input */}
