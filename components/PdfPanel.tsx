@@ -17,7 +17,7 @@ import {
  */
 const PdfDocument = dynamic(
   () => import("react-pdf").then((mod) => mod.Document),
-  { ssr: false }
+  { ssr: false },
 );
 
 const PdfPage = dynamic(() => import("react-pdf").then((mod) => mod.Page), {
@@ -72,11 +72,6 @@ export default function PdfPanel() {
    * PDF 페이지 화면 표시 너비
    */
   const [pdfPageWidth, setPdfPageWidth] = useState(700);
-
-  /**
-   * 필기 모드 켜짐 여부
-   */
-  const [isPenMode, setIsPenMode] = useState(false);
 
   /**
    * 현재 선택된 도구
@@ -146,7 +141,7 @@ export default function PdfPanel() {
   /**
    * 작은 버튼 공통 UI 스타일
    *
-   * 이 값을 바꾸면 필기 켜기, 지우기, 이전/다음 버튼 크기가 같이 바뀜.
+   * 이 값을 바꾸면 지우기, 이전/다음 버튼 크기가 같이 바뀜.
    */
   const smallButtonStyle: CSSProperties = {
     padding: "4px 8px",
@@ -189,13 +184,13 @@ export default function PdfPanel() {
    * 필기 도구 바 전체 UI 스타일
    */
   const toolBarStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: "8px",
-  marginBottom: "0",
-  flexWrap: "nowrap",
-  whiteSpace: "nowrap",
-};
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    marginBottom: "0",
+    flexWrap: "nowrap",
+    whiteSpace: "nowrap",
+  };
 
   /**
    * react-pdf worker 설정
@@ -204,7 +199,7 @@ export default function PdfPanel() {
     import("react-pdf").then(({ pdfjs }) => {
       pdfjs.GlobalWorkerOptions.workerSrc = new URL(
         "pdfjs-dist/build/pdf.worker.min.mjs",
-        import.meta.url
+        import.meta.url,
       ).toString();
     });
   }, []);
@@ -213,26 +208,26 @@ export default function PdfPanel() {
    * PDF 파일 업로드 처리
    */
   const handlePdfUpload = (event: ChangeEvent<HTMLInputElement>) => {
-  const file = event.target.files?.[0];
-  if (!file) return;
+    const file = event.target.files?.[0];
+    if (!file) return;
 
-  const url = URL.createObjectURL(file);
+    const url = URL.createObjectURL(file);
 
-  setPdfFile(file);
-  setPdfUrl(url);
-  setPageNumber(1);
-  setNumPages(0);
-  setPageDrawings({});
+    setPdfFile(file);
+    setPdfUrl(url);
+    setPageNumber(1);
+    setNumPages(0);
+    setPageDrawings({});
 
-  event.target.value = "";
-};
-useEffect(() => {
-  return () => {
-    if (pdfUrl) {
-      URL.revokeObjectURL(pdfUrl);
-    }
+    event.target.value = "";
   };
-}, [pdfUrl]);
+  useEffect(() => {
+    return () => {
+      if (pdfUrl) {
+        URL.revokeObjectURL(pdfUrl);
+      }
+    };
+  }, [pdfUrl]);
   /**
    * 현재 페이지의 필기를 이미지로 저장
    */
@@ -286,7 +281,7 @@ useEffect(() => {
           0,
           0,
           drawingCanvas.width,
-          drawingCanvas.height
+          drawingCanvas.height,
         );
       };
 
@@ -294,14 +289,14 @@ useEffect(() => {
     }
   };
 
-    /**
+  /**
    * 마우스, 펜, 손가락 좌표를 canvas 내부 좌표로 변환
    *
    * event.clientX, event.clientY는 브라우저 화면 기준 좌표임.
    * 그런데 canvas에 그리려면 canvas 내부 기준 좌표가 필요함.
    */
   const getCanvasPoint = (
-    event: ReactPointerEvent<HTMLCanvasElement>
+    event: ReactPointerEvent<HTMLCanvasElement>,
   ): Point | null => {
     const canvas = drawingCanvasRef.current;
     if (!canvas) return null;
@@ -455,150 +450,131 @@ useEffect(() => {
   };
 
   /**
+   * 입력 필터
+   *
+   * pen:
+   * 애플펜슬, 스타일러스 입력이므로 필기 처리함.
+   *
+   * mouse:
+   * PC 테스트용 마우스 입력이므로 필기 처리함.
+   *
+   * touch:
+   * 손가락, 손바닥 입력이므로 필기 처리하지 않음.
+   * preventDefault도 하지 않아서 PDF 영역 스크롤/드래그가 가능하게 둠.
+   */
+  const isDrawingPointer = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    return event.pointerType === "pen" || event.pointerType === "mouse";
+  };
+
+  /**
    * 필기 시작
    *
-   * PDF 위 canvas를 누르는 순간 실행됨.
+   * 펜 또는 마우스로 PDF 위 canvas를 누르는 순간만 실행됨.
+   * 손가락/손바닥은 여기서 그냥 통과시켜 PDF 스크롤/드래그에 쓰이게 함.
    */
-  /**
- * 팜 리젝션용 입력 필터
- *
- * pen:
- * 애플펜슬, 스타일러스 입력
- *
- * mouse:
- * PC에서 테스트할 때 사용
- *
- * touch:
- * 손가락, 손바닥 입력
- * 팜 리젝션을 위해 무시
- */
-const isAllowedPointer = (
-  event: ReactPointerEvent<HTMLCanvasElement>
-) => {
-  /**
-   * 핵심 팜 리젝션
-   *
-   * pointerType === "pen"  : 애플펜슬 / 스타일러스만 필기 허용
-   * pointerType === "mouse": PC 테스트용으로만 허용
-   * pointerType === "touch": 손가락 / 손바닥이므로 무조건 차단
-   */
-  if (event.pointerType === "pen") return true;
-  if (event.pointerType === "mouse") return true;
+  const handlePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (!isDrawingPointer(event)) {
+      return;
+    }
 
-  return false;
-};
+    /**
+     * 이미 필기 중이면 다른 입력은 무시함.
+     */
+    if (activePointerIdRef.current !== null) {
+      event.preventDefault();
+      return;
+    }
 
-const handlePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-  if (!isPenMode) return;
-
-  /**
-   * 이미 펜으로 필기 중이면 다른 입력은 전부 무시함.
-   * 손바닥이 나중에 닿아도 새 필기로 처리되지 않게 함.
-   */
-  if (activePointerIdRef.current !== null) {
     event.preventDefault();
-    return;
-  }
 
-  /**
-   * 손가락 / 손바닥 터치는 시작부터 막음.
-   */
-  if (!isAllowedPointer(event)) {
-    event.preventDefault();
-    return;
-  }
+    const point = getCanvasPoint(event);
+    if (!point) return;
 
-  event.preventDefault();
+    const canvas = drawingCanvasRef.current;
+    if (!canvas) return;
 
-  const point = getCanvasPoint(event);
-  if (!point) return;
+    /**
+     * pointer capture로 현재 펜/마우스 입력만 끝까지 추적함.
+     * 중간에 손바닥 터치가 들어와도 pointerId가 다르면 무시됨.
+     */
+    try {
+      canvas.setPointerCapture(event.pointerId);
+    } catch {
+      // 일부 브라우저에서 capture가 실패해도 필기는 계속 가능하게 둠.
+    }
 
-  const canvas = drawingCanvasRef.current;
-  if (!canvas) return;
+    activePointerIdRef.current = event.pointerId;
+    isDrawingRef.current = true;
+    lastPointRef.current = point;
 
-  /**
-   * pointer capture로 현재 펜 입력만 끝까지 추적함.
-   * 중간에 손바닥 터치가 들어와도 pointerId가 다르면 무시됨.
-   */
-  try {
-    canvas.setPointerCapture(event.pointerId);
-  } catch {
-    // 일부 브라우저에서 capture가 실패해도 필기는 계속 가능하게 둠.
-  }
-
-  activePointerIdRef.current = event.pointerId;
-  isDrawingRef.current = true;
-  lastPointRef.current = point;
-
-  drawDot(point);
-};
+    drawDot(point);
+  };
 
   /**
    * 필기 중
    *
-   * 포인터가 움직일 때마다 실행됨.
+   * 필기를 시작한 펜/마우스 pointerId와 같은 입력만 선으로 이어 그림.
+   * 손가락/손바닥 움직임은 막지 않아서 PDF 드래그/스크롤에 쓰이게 함.
    */
-  
-const handlePointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-  if (!isPenMode) return;
-
-  /**
-   * 손가락 / 손바닥 움직임은 그리지도 않고, 화면 제스처로도 번지지 않게 막음.
-   */
-  if (!isAllowedPointer(event)) {
-    event.preventDefault();
-    return;
-  }
-
-  /**
-   * 필기를 시작한 펜의 pointerId와 다르면 무시함.
-   */
-  if (activePointerIdRef.current !== event.pointerId) return;
-
-  if (!isDrawingRef.current) return;
-
-  event.preventDefault();
-
-  const currentPoint = getCanvasPoint(event);
-  const lastPoint = lastPointRef.current;
-
-  if (!currentPoint || !lastPoint) return;
-
-  drawLine(lastPoint, currentPoint);
-  lastPointRef.current = currentPoint;
-};
-
-const handlePointerUp = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-  if (!isPenMode) return;
-
-  /**
-   * 손바닥 / 손가락의 pointerup, pointercancel은 현재 필기를 끝내면 안 됨.
-   */
-  if (activePointerIdRef.current !== event.pointerId) {
-    event.preventDefault();
-    return;
-  }
-
-  event.preventDefault();
-
-  const canvas = drawingCanvasRef.current;
-
-  if (canvas) {
-    try {
-      if (canvas.hasPointerCapture(event.pointerId)) {
-        canvas.releasePointerCapture(event.pointerId);
-      }
-    } catch {
-      // release 실패는 무시해도 됨.
+  const handlePointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (!isDrawingPointer(event)) {
+      return;
     }
-  }
 
-  isDrawingRef.current = false;
-  lastPointRef.current = null;
-  activePointerIdRef.current = null;
+    /**
+     * 필기를 시작한 입력의 pointerId와 다르면 무시함.
+     */
+    if (activePointerIdRef.current !== event.pointerId) return;
 
-  saveCurrentDrawing();
-};
+    if (!isDrawingRef.current) return;
+
+    event.preventDefault();
+
+    const currentPoint = getCanvasPoint(event);
+    const lastPoint = lastPointRef.current;
+
+    if (!currentPoint || !lastPoint) return;
+
+    drawLine(lastPoint, currentPoint);
+    lastPointRef.current = currentPoint;
+  };
+
+  /**
+   * 필기 종료
+   */
+  const handlePointerUp = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (!isDrawingPointer(event)) {
+      return;
+    }
+
+    /**
+     * 손바닥 / 손가락의 pointerup, pointercancel은 현재 필기를 끝내면 안 됨.
+     */
+    if (activePointerIdRef.current !== event.pointerId) {
+      return;
+    }
+
+    event.preventDefault();
+
+    const canvas = drawingCanvasRef.current;
+
+    if (canvas) {
+      try {
+        if (canvas.hasPointerCapture(event.pointerId)) {
+          canvas.releasePointerCapture(event.pointerId);
+        }
+      } catch {
+        // release 실패는 무시해도 됨.
+      }
+    }
+
+    isDrawingRef.current = false;
+    lastPointRef.current = null;
+    activePointerIdRef.current = null;
+
+    saveCurrentDrawing();
+  };
+
   /**
    * 현재 페이지의 필기만 지우기
    */
@@ -689,18 +665,18 @@ const handlePointerUp = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     };
   }, [pageNumber, pdfPageWidth, pageDrawings]);
 
-    return (
+  return (
     <section
-  style={{
-    height: "100%",
-    backgroundColor: "white",
-    padding: "10px",
-    boxSizing: "border-box",
-    display: "flex",
-    flexDirection: "column",
-    minHeight: 0,
-  }}
->
+      style={{
+        height: "100%",
+        backgroundColor: "white",
+        padding: "10px",
+        boxSizing: "border-box",
+        display: "flex",
+        flexDirection: "column",
+        minHeight: 0,
+      }}
+    >
       {/* 상단 영역: 제목 + PDF 파일 선택 */}
       <div
         style={{
@@ -747,198 +723,188 @@ const handlePointerUp = (event: ReactPointerEvent<HTMLCanvasElement>) => {
             fontWeight: "bold",
             margin: 0,
           }}
-        >
-          
-        </h1>
+        ></h1>
 
         {/* PDF 파일 선택 input */}
         {/* 상단 한 줄 툴바 */}
-<div
-  style={{
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: "10px",
-    paddingTop: "8px",
-    marginBottom: "8px",
-    width: "100%",
-    overflowX: "auto",
-    whiteSpace: "nowrap",
-  }}
->
-  {/* 왼쪽 필기 도구 묶음 */}
-  <div style={toolBarStyle}>
-    {/* 필기 모드 켜기 / 끄기 버튼 */}
-    <button
-      onClick={() => setIsPenMode((prev) => !prev)}
-      style={{
-        ...smallButtonStyle,
-        backgroundColor: isPenMode ? "#111827" : "white",
-        color: isPenMode ? "white" : "#111827",
-      }}
-    >
-      {isPenMode ? "필기 끄기" : "필기 켜기"}
-    </button>
-
-    {/* 펜 / 형광펜 / 지우개 선택창 */}
-    <select
-      value={drawTool}
-      onChange={(event) => setDrawTool(event.target.value as DrawTool)}
-      style={smallSelectStyle}
-    >
-      <option value="pen">펜</option>
-      <option value="highlighter">형광펜</option>
-      <option value="eraser">지우개</option>
-    </select>
-
-    {/* 펜 선택 시 펜 종류와 펜 색상 표시 */}
-    {drawTool === "pen" && (
-      <>
-        <select
-          value={penType}
-          onChange={(event) => setPenType(event.target.value as PenType)}
-          style={smallSelectStyle}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "10px",
+            paddingTop: "8px",
+            marginBottom: "8px",
+            width: "100%",
+            overflowX: "auto",
+            whiteSpace: "nowrap",
+          }}
         >
-          <option value="ballpoint">볼펜</option>
-          <option value="fountain">만년필</option>
-          <option value="pencil">연필</option>
-        </select>
+          {/* 왼쪽 필기 도구 묶음 */}
+          <div style={toolBarStyle}>
+            {/* 펜 / 형광펜 / 지우개 선택창 */}
+            <select
+              value={drawTool}
+              onChange={(event) => setDrawTool(event.target.value as DrawTool)}
+              style={smallSelectStyle}
+            >
+              <option value="pen">펜</option>
+              <option value="highlighter">형광펜</option>
+              <option value="eraser">지우개</option>
+            </select>
 
-        <label style={smallLabelStyle}>
-          펜 색
-          <input
-            type="color"
-            value={penColor}
-            onChange={(event) => setPenColor(event.target.value)}
+            {/* 펜 선택 시 펜 종류와 펜 색상 표시 */}
+            {drawTool === "pen" && (
+              <>
+                <select
+                  value={penType}
+                  onChange={(event) =>
+                    setPenType(event.target.value as PenType)
+                  }
+                  style={smallSelectStyle}
+                >
+                  <option value="ballpoint">볼펜</option>
+                  <option value="fountain">만년필</option>
+                  <option value="pencil">연필</option>
+                </select>
+
+                <label style={smallLabelStyle}>
+                  펜 색
+                  <input
+                    type="color"
+                    value={penColor}
+                    onChange={(event) => setPenColor(event.target.value)}
+                    style={{
+                      width: "28px",
+                      height: "22px",
+                      padding: 0,
+                      border: "none",
+                    }}
+                  />
+                </label>
+              </>
+            )}
+
+            {/* 형광펜 선택 시 형광펜 색상 표시 */}
+            {drawTool === "highlighter" && (
+              <label style={smallLabelStyle}>
+                형광펜 색
+                <input
+                  type="color"
+                  value={highlighterColor}
+                  onChange={(event) => setHighlighterColor(event.target.value)}
+                  style={{
+                    width: "28px",
+                    height: "22px",
+                    padding: 0,
+                    border: "none",
+                  }}
+                />
+              </label>
+            )}
+
+            {/* 펜 또는 형광펜 굵기 조절 */}
+            {drawTool !== "eraser" && (
+              <label style={smallLabelStyle}>
+                굵기
+                <input
+                  type="range"
+                  min="1"
+                  max="10"
+                  value={penWidth}
+                  onChange={(event) => setPenWidth(Number(event.target.value))}
+                  style={{
+                    width: "120px",
+                  }}
+                />
+                {penWidth}
+              </label>
+            )}
+
+            {/* 지우개 크기 조절 */}
+            {drawTool === "eraser" && (
+              <label style={smallLabelStyle}>
+                지우개
+                <input
+                  type="range"
+                  min="5"
+                  max="60"
+                  value={eraserWidth}
+                  onChange={(event) =>
+                    setEraserWidth(Number(event.target.value))
+                  }
+                  style={{
+                    width: "120px",
+                  }}
+                />
+                {eraserWidth}
+              </label>
+            )}
+
+            <button onClick={clearCurrentPageDrawing} style={smallButtonStyle}>
+              현재 페이지 지우기
+            </button>
+
+            <button onClick={clearAllDrawings} style={smallButtonStyle}>
+              전체 필기 지우기
+            </button>
+          </div>
+
+          {/* 오른쪽 파일 선택 묶음 */}
+          <div
             style={{
-              width: "28px",
-              height: "22px",
-              padding: 0,
-              border: "none",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              flexShrink: 0,
             }}
-          />
-        </label>
-      </>
-    )}
+          >
+            <label
+              title="PDF 파일 선택"
+              style={{
+                width: "36px",
+                height: "36px",
+                border: "1px solid #676767",
+                borderRadius: "8px",
+                backgroundColor: "#ebebeb",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                cursor: "pointer",
+                fontSize: "22px",
+                userSelect: "none",
+              }}
+            >
+              <img
+                src="/icons/pdf_upload_icon.svg"
+                alt="PDF 파일 선택"
+                style={{ width: "25px", height: "25px", objectFit: "contain" }}
+              />
+              <input
+                type="file"
+                accept="application/pdf"
+                onChange={handlePdfUpload}
+                style={{
+                  display: "none",
+                }}
+              />
+            </label>
 
-    {/* 형광펜 선택 시 형광펜 색상 표시 */}
-    {drawTool === "highlighter" && (
-      <label style={smallLabelStyle}>
-        형광펜 색
-        <input
-          type="color"
-          value={highlighterColor}
-          onChange={(event) => setHighlighterColor(event.target.value)}
-          style={{
-            width: "28px",
-            height: "22px",
-            padding: 0,
-            border: "none",
-          }}
-        />
-      </label>
-    )}
-
-    {/* 펜 또는 형광펜 굵기 조절 */}
-    {drawTool !== "eraser" && (
-      <label style={smallLabelStyle}>
-        굵기
-        <input
-          type="range"
-          min="1"
-          max="10"
-          value={penWidth}
-          onChange={(event) => setPenWidth(Number(event.target.value))}
-          style={{
-            width: "120px",
-          }}
-        />
-        {penWidth}
-      </label>
-    )}
-
-    {/* 지우개 크기 조절 */}
-    {drawTool === "eraser" && (
-      <label style={smallLabelStyle}>
-        지우개
-        <input
-          type="range"
-          min="5"
-          max="60"
-          value={eraserWidth}
-          onChange={(event) => setEraserWidth(Number(event.target.value))}
-          style={{
-            width: "120px",
-          }}
-        />
-        {eraserWidth}
-      </label>
-    )}
-
-    <button onClick={clearCurrentPageDrawing} style={smallButtonStyle}>
-      현재 페이지 지우기
-    </button>
-
-    <button onClick={clearAllDrawings} style={smallButtonStyle}>
-      전체 필기 지우기
-    </button>
-  </div>
-
-  {/* 오른쪽 파일 선택 묶음 */}
-  <div
-    style={{
-      display: "flex",
-      alignItems: "center",
-      gap: "8px",
-      flexShrink: 0,
-    }}
-  >
-    <label
-      title="PDF 파일 선택"
-      style={{
-        width: "36px",
-        height: "36px",
-        border: "1px solid #676767",
-        borderRadius: "8px",
-        backgroundColor: "#ebebeb",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        cursor: "pointer",
-        fontSize: "22px",
-        userSelect: "none",
-      }}
-    >
-      <img
-        src="/icons/pdf_upload_icon.svg"
-        alt="PDF 파일 선택"
-        style={{width: "25px", height: "25px", objectFit: "contain",}}
-        />
-        <input
-          type="file"
-          accept="application/pdf"
-          onChange={handlePdfUpload}
-          style={{
-            display: "none",
-          }}
-        />
-      </label>
-
-      <span
-        style={{
-          fontSize: "13px",
-          color: "#374151",
-          maxWidth: "220px",
-          whiteSpace: "nowrap",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-        }}
-      >
-      {pdfFile ? pdfFile.name : "선택된 파일 없음"}
-      </span>
-    </div>
-  </div>
-</div>
+            <span
+              style={{
+                fontSize: "13px",
+                color: "#374151",
+                maxWidth: "220px",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {pdfFile ? pdfFile.name : "선택된 파일 없음"}
+            </span>
+          </div>
+        </div>
+      </div>
 
       {/* PDF가 실제로 표시되는 큰 영역 */}
       <div
@@ -1147,31 +1113,30 @@ const handlePointerUp = (event: ReactPointerEvent<HTMLCanvasElement>) => {
 
               {/* PDF 위에 올라가는 투명 필기 canvas */}
               <canvas
-                 ref={drawingCanvasRef}
-                 onPointerDown={handlePointerDown}
-                 onPointerMove={handlePointerMove}
-                 onPointerUp={handlePointerUp}
-                 onPointerCancel={handlePointerUp}
-                 onLostPointerCapture={handlePointerUp}
-                 onContextMenu={(event) => event.preventDefault()}
-                 style={{
-                 position: "absolute",
-                 left: 0,
-                 top: 0,
-                 zIndex: 4,
-                 pointerEvents: isPenMode ? "auto" : "none",
-                 touchAction: isPenMode ? "none" : "auto",
-                 userSelect: "none",
-                 WebkitUserSelect: "none",
-                 overscrollBehavior: "contain",
-                 cursor:
-                 drawTool === "eraser"
-                  ? "grab"
-                  : isPenMode
-                  ? "crosshair"
-                  : "default",
-                  }}
-                />
+                ref={drawingCanvasRef}
+                onPointerDown={handlePointerDown}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
+                onPointerCancel={handlePointerUp}
+                onLostPointerCapture={handlePointerUp}
+                onContextMenu={(event) => event.preventDefault()}
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  top: 0,
+                  zIndex: 4,
+                  pointerEvents: "auto",
+                  /**
+                   * 손가락은 PDF 영역 스크롤/드래그에 사용하고,
+                   * 펜/마우스 입력만 JS에서 preventDefault하여 필기로 처리함.
+                   */
+                  touchAction: "pan-x pan-y",
+                  userSelect: "none",
+                  WebkitUserSelect: "none",
+                  overscrollBehavior: "contain",
+                  cursor: drawTool === "eraser" ? "grab" : "crosshair",
+                }}
+              />
             </div>
           </div>
         ) : (
